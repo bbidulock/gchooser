@@ -1,0 +1,456 @@
+#!/usr/bin/perl
+
+use Socket qw(
+	SOCK_DGRAM
+	SOL_SOCKET
+	SO_BROADCAST
+	AF_INET
+	AF_INET6
+	AF_UNIX
+	IPPROTO_UDP
+	MSG_DONTWAIT
+	PF_INET
+	PF_INET6
+	sockaddr_family
+	pack_sockaddr_in
+	unpack_sockaddr_in
+	pack_sockaddr_in6
+	unpack_sockaddr_in6
+	pack_sockaddr_un
+	unpack_sockaddr_un
+	getnameinfo
+	getaddrinfo
+	inet_ntop
+	);
+use Net::Interface qw(type :iftype);
+use Net::IP;
+use Glib qw(TRUE FALSE);
+use Gtk2 -init;
+use strict;
+use warnings;
+
+
+# Packet format:
+#
+# CARD16 version number (always 1)
+# CARD16 opcode
+# CARD16 length of remaining data in bytes
+#
+# Query, BroadcastQuery, IndirectQuery
+# Display -> Manager
+# Fields:
+#	Authentication names: ARRAYofARRAY8
+
+# ForwardQuery
+# Primary Manager -> Secondary Manager
+# Fields:
+#	Client Address: ARRAY8
+#	Client Port: ARRAY8
+#	Authentication names: ARRAYofARRAY8
+
+# Willing
+# Manager -> Display
+#	Authentication name: ARRAY8
+#	Hostname: ARRAY8
+#	Status: ARRAY8
+#
+
+# Unwilling
+# Manager -> Display
+#	Hostname: ARRAY8
+#	Status: ARRAY8
+#
+
+# Request
+# Display -> Manager
+#	Display Number: CARD16
+#	Connection Types: ARRAY16
+#	Connection Address: ARRAYofARRAY8
+#	Authentication Name: ARRAY8
+#	Authentication Data: ARRAY8
+#	Authorization Names: ARRAYofARRAY8
+#	Manufacturer Display ID: ARRAY8
+#
+
+# Accept
+# Manager -> Display
+#	Session ID: CARD32
+#	Authentication Name: ARRAY8
+#	Authentication Data: ARRAY8
+#	Authorization Name: ARRAY8
+#	Authorization Data: ARRAY8
+#
+
+# Decline
+# Manager -> Display
+#	Status: ARRAY8
+#	Authentication Name: ARRAY8
+#	Authentication Data: ARRAY8
+#
+
+# Manage
+# Display -> Manager
+#	Session ID: CARD32
+#	Display Number: CARD16
+#	Display Class: ARRAY8
+#
+
+# Failed
+# Manager -> Display
+#	Session ID: CARD32
+#	Status: ARRAY8
+#
+
+# KeepAlive
+# Display -> Manager
+#	Display Number: CARD16
+#	Session ID: CARD32
+#
+
+# Alive
+# Manager -> Display
+#	Session Running: CARD8
+#	Session ID: CARD32
+#
+
+use constant {
+	BROADCAST_QUERY	=> 1,
+	QUERY		=> 2,
+	INDIRECT_QUERY	=> 3,
+	FORWARD_QUERY	=> 4,
+	WILLING		=> 5,
+	UNWILLING	=> 6,
+	REQUEST		=> 7,
+	ACCEPT		=> 8,
+	DECLINE		=> 9,
+	MANAGE		=> 10,
+	REFUSE		=> 11,
+	FAILED		=> 12,
+	KEEPALIVE	=> 13,
+	ALIVE		=> 14,
+};
+
+use constant {
+	XDM_QUERY			=> 0,
+	XDM_BROADCAST			=> 1,
+	XDM_INDIRECT			=> 2,
+	XDM_COLLECT_QUERY		=> 3,
+	XDM_COLLECT_BROADCAST_QUERY	=> 4,
+	XDM_COLLECT_INDIRECT_QUERY	=> 5,
+	XDM_START_CONNECTION		=> 6,
+	XDM_AWAIT_REQUEST_RESPONSE	=> 7,
+	XDM_MANAGE			=> 8,
+	XDM_RUN_SESSION			=> 9,
+	XDM_OFF				=> 10,
+	XDM_AWAIT_USER_INPUT		=> 11,
+	XDM_KEEPALIVE			=> 12,
+	XDM_AWAIT_ALIVE_RESPONSE	=> 13,
+	XDM_MULTICAST			=> 14,
+	XDM_COLLECT_MULTICAST_QUERY	=> 15,
+};
+
+use constant {
+	XDM_UDP_PORT			=> 177,
+	XDMCP_PROTOCOL_VERSION		=> 1,
+};
+
+use constant {
+	PING_TRIES	=> 3,
+	PING_INTERVAL	=> 2000,    # 2 seconds
+};
+
+use constant {
+	OBEYSESS_DISPLAY	=> 0,	# obey multipleSessions resources
+	REMANAGE_DISPLAY	=> 1,	# force remanage
+	UNMANAGE_DISPLAY	=> 2,	# force deletion
+	RESERVER_DISPLAY	=> 3,	# force server termination
+	OPENFAILED_DISPLAY	=> 4,	# XOpenDisplay failed, retry
+};
+
+use constant {
+	FamilyInternet		=> 0,	    # X.h: IPv4
+	FamilyDECnet		=> 1,	    # X.h:
+	FamilyChaos		=> 2,	    # X.h:
+	FamilyInternet6		=> 6,	    # X.h: IPv6
+
+	FamilyLocal		=> 256,	    # Xauth.h: not part of X standard
+	FamilyWild		=> 65535,   # Xauth.h:
+	FamilyNetname		=> 254,	    # Xauth.h: not part of X standard
+	FamilyKrb5Principal	=> 253,	    # Xauth.h: Kerberos 5 principal name
+	FamilyLocalHost		=> 252,	    # Xauth.h: for local non-net authentication
+};
+
+
+#
+# Get access to the root window.
+#
+
+my @hostnames;
+
+sub Choose {
+}
+
+sub AddHost {
+	my ($addr,$opc,$authname,$hostname,$status) = @_;
+	my ($ctype);
+	my $hostent;
+	my $family = sockaddr_family($addr);
+	if ($family == AF_INET) {
+		$ctype = &FamilyInternet;
+	}
+	elsif ($family == AF_INET6) {
+		$ctype = &FamilyInternet6;
+	}
+	elsif ($family == AF_UNIX) {
+		$ctype = &FamilyLocal;
+	}
+	else {
+		return;
+	}
+	my $found = 0;
+	foreach my $host (@hostnames) {
+		if ($host->{addr} eq $addr) {
+			if ($host->{willing} == $opc and
+			    $host->{status} eq $status and
+			    $host->{addr} eq $addr) {
+				print STDERR "Host $hostname skipped.\n";
+				return;
+			}
+			$found = 1;
+			$hostent = $host;
+			print STDERR "Found host $hostname.\n";
+			last;
+		}
+	}
+	if (not $found) {
+		my ($err, $name, $service) = getnameinfo($addr);
+		next if $err;
+		my ($port,$ipaddr);
+		if ($family == AF_INET) {
+			($port,$ipaddr) = unpack_sockaddr_in($addr);
+			$ipaddr = inet_ntop(AF_INET,$ipaddr);
+		}
+		elsif ($family == AF_INET6) {
+			($port,$ipaddr) = unpack_sockaddr_in6($addr);
+			$ipaddr = inet_ntop(AF_INET6,$ipaddr);
+		}
+		elsif ($family == AF_UNIX) {
+			($port,$ipaddr) = (0,'');
+		}
+		$hostent = {
+			service=>$service,
+			ctype=>$ctype,
+			hostname=>$hostname,
+			fromhere=>$name,
+			addr=>$addr,
+			port=>$port,
+			ipaddr=>$ipaddr,
+		};
+		push @hostnames, $hostent;
+	}
+	$hostent->{willing} = $opc;
+	$hostent->{status} = $status;
+	print STDERR "Added host:\n";
+	print STDERR "connectionType: ",$hostent->{ctype},"\n";
+	print STDERR "hostname: ",$hostent->{hostname},"\n";
+	print STDERR "fromhere: ",$hostent->{fromhere},"\n";
+	print STDERR "service: ",$hostent->{service},"\n";
+	print STDERR "willing: ",$hostent->{willing},"\n";
+	print STDERR "status: ",$hostent->{status},"\n";
+	print STDERR "port: ",$hostent->{port},"\n";
+	print STDERR "ipaddr: ",$hostent->{ipaddr},"\n";
+	print STDERR "----------------------------\n";
+	 #RebuildTable();
+	return 1;
+}
+
+sub ReceivePacket {
+	my ($sock,$ver) = @_;
+	my $message = "";
+	return unless defined $sock;
+	my ($addr,$bytes);
+	while (defined($addr = recv($sock,$message,4096,MSG_DONTWAIT))) {
+		next unless length($message) >= 6;
+		my ($ver,$opc,$len) = unpack('nnn',substr($message,0,6));
+		my $off = 6;
+		next unless $ver == 1;
+		my ($authname,$hostname,$status) = ('');
+		next unless $opc == &WILLING or $opc == &UNWILLING;
+		if ($opc == &WILLING) {
+			next unless length($message) >= $off + 2;
+			$bytes = unpack('n',substr($message,$off,2)); $off += 2;
+			next unless length($message) >= $off + $bytes;
+			$authname = substr($message,$off,$bytes); $off += $bytes;
+		}
+		next unless length($message) >= $off + 2;
+		$bytes = unpack('n',substr($message,$off,2)); $off += 2;
+		next unless length($message) >= $off + $bytes;
+		$hostname = substr($message,$off,$bytes); $off += $bytes;
+		next unless length($message) >= $off + 2;
+		$bytes = unpack('n',substr($message,$off,2)); $off += 2;
+		next unless length($message) >= $off + $bytes;
+		$status = substr($message,$off,$bytes); $off += $bytes;
+		AddHost($addr,$opc,$authname,$hostname,$status);
+	}
+	return Glib::SOURCE_CONTINUE;
+}
+
+my @hostaddrs;
+my $pingTry = 0;
+
+sub PingHosts {
+	print STDERR "PingHosts...\n";
+	foreach my $hostaddr (@hostaddrs) {
+		my $sock = $hostaddr->{sock};
+		next unless $sock;
+		my $addr = $hostaddr->{addr};
+		my $family = sockaddr_family($addr);
+		if ($family == AF_INET) {
+			my @parts = unpack_sockaddr_in($addr);
+			$parts[1] = inet_ntop(AF_INET,$parts[1]);
+			print STDERR "Pinging: ",join(',',@parts),"\n";
+		}
+		elsif ($family == AF_INET6) {
+			my @parts = unpack_sockaddr_in6($addr);
+			$parts[1] = inet_ntop(AF_INET6,$parts[1]);
+			print STDERR "Pinging: ",join(',',@parts),"\n";
+		}
+		elsif ($family == AF_UNIX) {
+			my @parts = unpack_sockaddr_un($addr);
+			print STDERR "Pinging: ",join(',',@parts),"\n";
+		}
+		send($sock,pack('nnnb',&XDMCP_PROTOCOL_VERSION,$hostaddr->{opco},1,0),0,$addr) or
+			warn "send: $!";
+	}
+	$pingTry = $pingTry + 1;
+	if ($pingTry < PING_TRIES) {
+		Glib::Timeout->add(PING_INTERVAL,\&PingHosts);
+	}
+	return Glib::SOURCE_REMOVE;
+}
+
+sub InitXDMCP {
+	print STDERR "InitXDMCP...\n";
+	socket(my $sock4, PF_INET, SOCK_DGRAM, 0) or return 0;
+	setsockopt($sock4, SOL_SOCKET, SO_BROADCAST, pack('l',1)) or warn "setsockopt: $!";
+	socket(my $sock6, PF_INET6, SOCK_DGRAM, 0) || warn "socket: $!";
+	setsockopt($sock6, SOL_SOCKET, SO_BROADCAST, pack('l',1)) or warn "setsockopt: $!";
+
+	my $tag4 = Glib::IO->add_watch(fileno($sock4),'in',sub{
+			ReceivePacket($sock4,4);
+			return Glib::SOURCE_CONTINUE;
+		});
+	my $tag6 = Glib::IO->add_watch(fileno($sock6),'in',sub{
+			ReceivePacket($sock6,6);
+			return Glib::SOURCE_CONTINUE;
+		}) if defined $sock6;
+
+	 # ARGV can be:
+	 #	special string 'BROADCAST'
+	 #	hex coded IPv4 address XXXXXXXX
+	 #	hostname or text-based IPv4 or IPv6 address
+	 #
+	 # When 'BROADCAST' or text-based address is an IPv6 multicast
+	 # address, send a BROADCAST_QUERY.  Otherwise, send a QUERY.
+	 # 'BROADCAST' should register each interface that is broadcast
+	 # capable and is UP by its broadcast address.
+	 #
+	while ($_ = shift @ARGV) {
+		if (/^BROADCAST$/) {
+			my @interfaces = Net::Interface->interfaces();
+			foreach my $if (@interfaces) {
+				my @addrs = $if->broadcast();
+				foreach my $addr (@addrs) {
+					next unless defined $addr;
+					my $sockaddr;
+					if (length($addr) == 4) {
+						$sockaddr = pack_sockaddr_in(XDM_UDP_PORT,$addr);
+						push @hostaddrs, {
+							addr=>$sockaddr,
+							sock=>$sock4,
+							opco=>&BROADCAST_QUERY,
+						};
+					} else {
+						$sockaddr = pack_sockaddr_in6(XDM_UDP_PORT,$addr);
+						push @hostaddrs, {
+							addr=>$sockaddr,
+							sock=>$sock6,
+							opco=>&BROADCAST_QUERY,
+						};
+					}
+				}
+			}
+		}
+		elsif (/^([0-9a-fA-F][0-9a-fA-F]){4}$/) {
+			my $addr = pack('H*',$_);
+			my $sockaddr = pack_sockaddr_in(XDM_UDP_PORT,$addr);
+			push @hostaddrs, {
+				addr=>$sockaddr,
+				sock=>$sock4,
+				opco=>&QUERY,
+			}
+		}
+		else {
+			my ($err,@results) = getaddrinfo($_,'xdmcp',{
+				socktype=>SOCK_DGRAM,
+				protocol=>IPPROTO_UDP,
+			});
+			next if $err;
+			foreach my $result (@results) {
+				next unless $result->{family} == AF_INET or
+					    $result->{family} == AF_INET6;
+				next unless $result->{socktype} == SOCK_DGRAM;
+				next unless $result->{protocol} == IPPROTO_UDP;
+				if ($result->{family} == AF_INET) {
+					my ($port,$addr) =
+						unpack_sockaddr_in($result->{addr});
+					warn "Whoops" unless defined $addr;
+					my $ip = new Net::IP(inet_ntop(AF_INET,$addr));
+					my $type = $ip->iptype;
+					warn "Address ",inet_ntop(AF_INET,$addr)," invalid!" unless defined $type;
+					if ($type eq 'MULTICAST') {
+						push @hostaddrs, {
+							addr=>$result->{addr},
+							sock=>$sock4,
+							opco=>&BROADCAST_QUERY,
+						};
+					}
+					else {
+						push @hostaddrs, {
+							addr=>$result->{addr},
+							sock=>$sock4,
+							opco=>&QUERY,
+						};
+					}
+				}
+				else {
+					my ($port,$addr,$scope,$flow) =
+						unpack_sockaddr_in6($result->{addr});
+					my $type = type($addr);
+					if (($type & IPV6_ADDR_MULTICAST) or
+					    ($type & IPV6_ADDR_ANYCAST)) {
+						push @hostaddrs, {
+							addr=>$result->{addr},
+							sock=>$sock6,
+							opco=>&BROADCAST_QUERY,
+						};
+					}
+					else {
+						push @hostaddrs, {
+							addr=>$result->{addr},
+							sock=>$sock6,
+							opco=>&QUERY,
+						};
+					}
+				}
+			}
+		}
+	}
+	$pingTry = 0;
+	PingHosts();
+	return 1;
+}
+
+InitXDMCP;
+
+Gtk2->main;
