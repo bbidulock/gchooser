@@ -32,6 +32,9 @@ use Gtk2 -init;
 use strict;
 use warnings;
 
+my $splash = "/usr/lib/X11/xdm/banner.png";
+$splash = "/home/brian/.fluxbox/logout-banner.png"
+	unless -f "$splash";
 my %options = (connectionType=>0);
 
 sub pack_option {
@@ -40,8 +43,8 @@ sub pack_option {
 
 my $syntax = GetOptions(
 	"xdmAddress:s"=>\&pack_option,
-	"clientAddress:i"=>\&pack_option,
-	"connectionType:s"=>\$options{connectionType},
+	"clientAddress:s"=>\&pack_option,
+	"connectionType:i"=>\$options{connectionType},
 );
 
 # Packet format:
@@ -654,46 +657,97 @@ sub GetWindow {
 
 	my $vbox = Gtk2::VBox->new;
 	$win->add($vbox);
-
 	{
-		my $sw = Gtk2::ScrolledWindow->new;
-		$sw->set_shadow_type('etched-in');
-		$sw->set_policy('never','automatic');
-		$vbox->pack_start($sw,TRUE,TRUE,0);
-
-		$model = Gtk2::ListStore->new(@{&MODEL_FIELDS});
-		$view = Gtk2::TreeView->new($model);
-		$view->set_rules_hint(TRUE);
-		$view->set_search_column(&COLUMN_HOSTNAME);
-		$view->set_tooltip_column(&COLUMN_TOOLTIP);
-		$sw->add($view);
-
-		my $renderer = Gtk2::CellRendererText->new;
-		my $column = Gtk2::TreeViewColumn->new_with_attributes(
-			'Hosts',$renderer,markup=>&COLUMN_MARKUP);
-		$column->set_sort_column_id(&COLUMN_MARKUP);
-		$view->append_column($column);
-		$view->signal_connect(row_activated=>sub{DoAccept(); Gtk2::EVENT_PROPAGATE});
-
-		$sw->set_size_request(-1,300);
+		my $hostname = `hostname`; chomp $hostname;
+		my $lab = Gtk2::Label->new;
+		my @lines;
+		push @lines, "<big><b>Welcome to $hostname!</b></big>";
+		if ($options{xdmAddress}) {
+			my $a = $options{xdmAddress};
+			my ($family,$port,$addr) = unpack('nn',substr($a,0,4));
+			if ($family == AF_INET) {
+				$addr = inet_ntop($family,substr($a,4,4)).":$port";
+			} elsif ($family == AF_INET6) {
+				$addr = inet_ntop($family,substr($a,4,16)).":$port";
+			}
+			push @lines, "<small>\n<b>xdmAddress:</b> $addr</small>";
+		}
+		if ($options{clientAddress}) {
+			my $a = $options{clientAddress};
+			my $addr;
+			if (length($a) == 4) {
+				$addr = inet_ntop(AF_INET,$a);
+			} elsif (length($a) == 16) {
+				$addr = inet_ntop(AF_INET6,$a);
+			}
+			push @lines, "<small><b>clientAddress:</b> $addr</small>";
+		}
+		$lab->set_markup(join("\n",@lines));
+		$vbox->pack_start($lab,FALSE,TRUE,0);
 	}
 	{
-		my $bbox = Gtk2::HButtonBox->new;
-		$bbox->set_layout_default('start');
-		$bbox->set_spacing_default(5);
-		$vbox->pack_end($bbox,FALSE,TRUE,0);
+		my $tab = Gtk2::Table->new(1,2,TRUE);
+		$tab->set_col_spacings(5);
+		$vbox->pack_end($tab,TRUE,TRUE,0);
+		{
+			my $bin = Gtk2::Frame->new;
+			$bin->set_shadow_type('etched-in');
+			$bin->set_border_width(0);
+			$tab->attach_defaults($bin,0,1,0,1);
 
-		for (
-			[qw(gtk-refresh Refresh),sub{DoPing(); Gtk2::EVENT_PROPAGATE}],
-			[qw(gtk-cancel Cancel),sub{DoCancel(); Gtk2::EVENT_PROPAGATE}],
-			[qw(gtk-connect Connect),sub{DoAccept(); Gtk2::EVENT_PROPAGATE}],
-		) {
-			my $image = Gtk2::Image->new_from_icon_name($_->[0],'button');
-			my $button = Gtk2::Button->new_with_label($_->[1]);
-			$button->set_image($image);
-			$button->signal_connect_swapped(clicked=>$_->[2],$win);
-			$win->{buttons}{$_->[1]} = $button;
-			$bbox->add($button);
+			my $pan = Gtk2::Frame->new;
+			$pan->set_shadow_type('none');
+			$pan->set_border_width(10);
+			$bin->add($pan);
+
+			my $img = Gtk2::Image->new_from_file($splash);
+			$pan->add($img);
+		}
+		{
+			my $vbox = Gtk2::VBox->new;
+			$tab->attach_defaults($vbox,1,2,0,1);
+
+			{
+				my $sw = Gtk2::ScrolledWindow->new;
+				$sw->set_shadow_type('etched-in');
+				$sw->set_policy('never','automatic');
+				$vbox->pack_start($sw,TRUE,TRUE,0);
+
+				$model = Gtk2::ListStore->new(@{&MODEL_FIELDS});
+				$view = Gtk2::TreeView->new($model);
+				$view->set_rules_hint(TRUE);
+				$view->set_search_column(&COLUMN_HOSTNAME);
+				$view->set_tooltip_column(&COLUMN_TOOLTIP);
+				$sw->add($view);
+
+				my $renderer = Gtk2::CellRendererText->new;
+				my $column = Gtk2::TreeViewColumn->new_with_attributes(
+					"Accessible XDMCP Hosts",$renderer,markup=>&COLUMN_MARKUP);
+				$column->set_sort_column_id(&COLUMN_MARKUP);
+				$view->append_column($column);
+				$view->signal_connect(row_activated=>sub{DoAccept(); Gtk2::EVENT_PROPAGATE});
+
+				$sw->set_size_request(-1,300);
+			}
+			{
+				my $bbox = Gtk2::HButtonBox->new;
+				$bbox->set_layout_default('start');
+				$bbox->set_spacing_default(5);
+				$vbox->pack_end($bbox,FALSE,TRUE,0);
+
+				for (
+					[qw(gtk-refresh Refresh),sub{DoPing(); Gtk2::EVENT_PROPAGATE}],
+					[qw(gtk-cancel Cancel),sub{DoCancel(); Gtk2::EVENT_PROPAGATE}],
+					[qw(gtk-connect Connect),sub{DoAccept(); Gtk2::EVENT_PROPAGATE}],
+				) {
+					my $image = Gtk2::Image->new_from_icon_name($_->[0],'button');
+					my $button = Gtk2::Button->new_with_label($_->[1]);
+					$button->set_image($image);
+					$button->signal_connect_swapped(clicked=>$_->[2],$win);
+					$win->{buttons}{$_->[1]} = $button;
+					$bbox->add($button);
+				}
+			}
 		}
 	}
 	$win->set_default_size(-1,350);
