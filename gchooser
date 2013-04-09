@@ -32,14 +32,16 @@ use Gtk2 -init;
 use strict;
 use warnings;
 
-my $xdmAddress;
-my $clientAddress;
-my $connectionType;
+my %options = (connectionType=>0);
+
+sub pack_option {
+	$options{$_[0]} = pack('H*',$_[1]);
+}
 
 my $syntax = GetOptions(
-	"xdmAddress"=>\$xdmAddress,
-	"clientAddress"=>\$clientAddress,
-	"connectionType"=>\$connectionType,
+	"xdmAddress:s"=>\&pack_option,
+	"clientAddress:i"=>\&pack_option,
+	"connectionType:s"=>\$options{connectionType},
 );
 
 # Packet format:
@@ -206,12 +208,12 @@ use constant {
 	MODEL_FIELDS	    => [
 		'Glib::String', # hostname
 		'Glib::String', # remotename
-		'Glib::Boolean', # willing
+		'Glib::Int',    # willing
 		'Glib::String', # status
 		'Glib::String', # IP Address
-		'Glib::Int',  # connection type
+		'Glib::Int',    # connection type
 		'Glib::String', # service
-		'Glib::Int', # port
+		'Glib::Int',    # port
 		'Glib::String', # markup
 		'Glib::String', # tooltip
 	],
@@ -245,6 +247,9 @@ sub AddHost {
 	else {
 		return;
 	}
+	return unless $options{connectionType} == $ctype;
+	my ($err, $remotename, $service) = getnameinfo($addr);
+	return if $err;
 	my $iter;
 	my $found = 0;
 	my @values;
@@ -252,52 +257,34 @@ sub AddHost {
 		@values = $model->get($iter);
 		next unless $values[&COLUMN_IPADDR] eq $ipaddr and
 			    $values[&COLUMN_HOSTNAME] eq $hostname;
-		if ($values[&COLUMN_WILLING] == $opc and
-		    $values[&COLUMN_STATUS] eq $status and
-		    $values[&COLUMN_CTYPE] == $ctype) {
-			print STDERR "Host $hostname skipped.\n";
-			return;
-		}
 		$found = 1;
 		print STDERR "Found host $hostname.\n";
-		$values[&COLUMN_WILLING]    = $opc;
-		$values[&COLUMN_STATUS]	    = $status;
-		$values[&COLUMN_CTYPE]	    = $ctype;
-		$model->set($iter,
-			&COLUMN_WILLING,    $values[&COLUMN_WILLING],
-			&COLUMN_STATUS,	    $values[&COLUMN_STATUS],
-			&COLUMN_CTYPE,	    $values[&COLUMN_CTYPE],
-		);
 		last;
 	}
 	if (not $found) {
-		my ($err, $remotename, $service) = getnameinfo($addr);
-		return if $err;
 		@values = ();
-		$values[&COLUMN_HOSTNAME]   = $hostname;
-		$values[&COLUMN_REMOTENAME] = $remotename;
-		$values[&COLUMN_WILLING]    = $opc;
-		$values[&COLUMN_STATUS]	    = $status;
-		$values[&COLUMN_IPADDR]	    = $ipaddr;
-		$values[&COLUMN_CTYPE]	    = $ctype;
-		$values[&COLUMN_SERVICE]    = $service;
-		$values[&COLUMN_PORT]	    = $port;
 		$iter = $model->append;
-		$model->set($iter,
-			&COLUMN_HOSTNAME,   $values[&COLUMN_HOSTNAME],
-			&COLUMN_REMOTENAME, $values[&COLUMN_REMOTENAME],
-			&COLUMN_WILLING,    $values[&COLUMN_WILLING],
-			&COLUMN_STATUS,	    $values[&COLUMN_STATUS],
-			&COLUMN_IPADDR,	    $values[&COLUMN_IPADDR],
-			&COLUMN_CTYPE,	    $values[&COLUMN_CTYPE],
-			&COLUMN_SERVICE,    $values[&COLUMN_SERVICE],
-			&COLUMN_PORT,	    $values[&COLUMN_PORT],
-		);
 	}
+	$values[&COLUMN_IPADDR]	    = $ipaddr;
+	$values[&COLUMN_HOSTNAME]   = $hostname;
+	$values[&COLUMN_REMOTENAME] = $remotename;
+	$values[&COLUMN_WILLING]    = $opc;
+	$values[&COLUMN_STATUS]	    = $status;
+	$values[&COLUMN_CTYPE]	    = $ctype;
+	$values[&COLUMN_SERVICE]    = $service;
+	$values[&COLUMN_PORT]	    = $port;
+	$model->set($iter,
+		&COLUMN_HOSTNAME,   $values[&COLUMN_HOSTNAME],
+		&COLUMN_REMOTENAME, $values[&COLUMN_REMOTENAME],
+		&COLUMN_WILLING,    $values[&COLUMN_WILLING],
+		&COLUMN_STATUS,	    $values[&COLUMN_STATUS],
+		&COLUMN_IPADDR,	    $values[&COLUMN_IPADDR],
+		&COLUMN_CTYPE,	    $values[&COLUMN_CTYPE],
+		&COLUMN_SERVICE,    $values[&COLUMN_SERVICE],
+		&COLUMN_PORT,	    $values[&COLUMN_PORT],
+	);
 	my @markup;
 	my @tooltip;
-	my $remotename = $values[&COLUMN_REMOTENAME];
-	my $service    = $values[&COLUMN_SERVICE];
 	my $conntype = {
 		&FamilyLocal=>"UNIX Domain",
 		&FamilyInternet=>"TCP (IP Version 4)",
@@ -309,13 +296,13 @@ sub AddHost {
 		push @markup, "<span foreground=\"black\"><b>$hostname</b></span>";
 		push @markup, "<small><span foreground=\"black\">($remotename)</span></small>";
 		push @markup, "<small><span foreground=\"black\"><i>$status</i></span></small>";
-		push @tooltip, "<small><b>Willing:</b>\t\tWilling</small>";
+		push @tooltip, "<small><b>Willing:</b>\t\tWilling($opc)</small>";
 		push @tooltip, "<small><b>Status:</b>\t\t$status</small>";
 	}
 	else {
 		push @markup, "<span foreground=\"grey\"><b>$hostname</b></span>";
 		push @markup, "<small><span foreground=\"grey\">($remotename)</span></small>";
-		push @markup, "<small><span foreground=\"grey\"><i>Unwilling</i></span></small>";
+		push @markup, "<small><span foreground=\"grey\"><i>Unwilling($opc)</i></span></small>";
 		push @tooltip, "<small><b>Willing:</b>\tUnwilling</small>";
 	}
 	push @tooltip, "<small><b>IP Address:</b>\t$ipaddr</small>";
@@ -546,52 +533,78 @@ sub InitXDMCP {
 #	return \%resources;
 #}
 
+sub ErrorMessage {
+	my $markup = shift;
+	my $text = $markup;
+	$text =~ s/<[^>]*>//g;
+	warn "$text";
+	my $msg = Gtk2::MessageDialog->new_with_markup($top,
+		'destroy-with-parent', 'error', 'ok', $markup);
+	$msg->signal_connect(response=>sub{$msg->destroy});
+	$msg->show_all;
+	Glib::Timeout->add(3000,sub{$msg->destroy});
+}
+
+sub InfoMessage {
+	my $markup = shift;
+	my $text = $markup;
+	$text =~ s/<[^>]*>//g;
+	print STDERR "$text";
+	my $msg = Gtk2::MessageDialog->new_with_markup($top,
+		'destroy-with-parent', 'info', 'ok', $markup);
+	$msg->signal_connect(response=>sub{$msg->destroy});
+	$msg->show_all;
+	Glib::Timeout->add(3000,sub{$msg->destroy});
+}
+
 sub Choose {
-	my ($ctype,$rawaddr) = @_;
+	my ($ctype,$ipaddr) = @_;
 	my $host = shift;
-	if ($xdmAddress) {
+	if ($options{xdmAddress}) {
 		#
 		# Connect to XDM and output result
 		#
-		my $data = pack('H*',$xdmAddress);
-		my $family = unpack('n',substr($data,0,2));
-		my $port = unpack('n',substr($data,2,2));
-		my $addr = substr($data,4);
-		my $sockaddr;
+		my ($family,$port) = unpack('nn',substr($options{xdmAddress},0,4));
+		my ($addr,$sockaddr,$rawaddr);
 		if ($family == AF_INET) {
+			$addr = substr($options{xdmAddress},4,4);
 			$sockaddr = pack_sockaddr_in($port,$addr);
+			$rawaddr = inet_pton($family,$ipaddr);
 		}
 		elsif ($family == AF_INET6) {
+			$addr = substr($options{xdmAddress},4,16);
 			$sockaddr = pack_sockaddr_in6($port,$addr);
+			$rawaddr = inet_pton($family,$ipaddr);
+		}
+		else {
+			ErrorMessage("<b>Bad address family!</b>\nNumber: $family\n");
+			return;
 		}
 		my $sock;
 		unless (socket($sock, $family, SOCK_STREAM, 0)) {
-			warn "socket: $!";
-			exit(&REMANAGE_DISPLAY);
+			ErrorMessage("<b>socket:</b> $!");
+			return;
 		}
 		unless (connect($sock,$sockaddr)) {
-			warn "connect: $!";
-			exit(&REMANAGE_DISPLAY);
+			ErrorMessage("<b>connect:</b> $!");
+			close($sock);
+			return;
 		}
-		my $clientAddress = pack('H*',$clientAddress);
-		my $connectionType = $connectionType;
-		my $message = pack('n',length($clientAddress));
-		$message .= $clientAddress;
-		$message .= pack('n',$connectionType);
-		$message .= pack('n',length($rawaddr));
-		$message .= $rawaddr;
+		my $message = '';
+		$message .= pack('n',length($options{clientAddress})).$options{clientAddress};
+		$message .= pack('n',$options{connectionType});
+		$message .= pack('n',length($rawaddr).$rawaddr);
+		unless (send($sock,$message,0,$sockaddr)) {
+			ErrorMessage("<b>send:</b> $!");
+			close($sock);
+			return;
+		}
 		close($sock);
 	}
 	else {
-		#
-		# Print result on standard output:
-		#
-		# format integer connection type '%u\n'
-		# numbers and spaces.
-		#
-		printf STDOUT "%u\n%s\n", $ctype,
-			join(' ',unpack('C*',$rawaddr));
+		InfoMessage("Would have connected to $ipaddr\n");
 	}
+	exit(&OBEYSESS_DISPLAY);
 }
 
 sub DoAccept {
@@ -599,42 +612,19 @@ sub DoAccept {
 	my $selection = $view->get_selection;
 	my ($model,$iter) = $selection->get_selected;
 	unless ($iter) {
-		my $msg = Gtk2::MessageDialog->new_with_markup($top,
-			'destroy-with-parent', 'error', 'ok',
-			join("\n", '<b>No selection!</b>',
-				   'Click on a list entry to make a selection.'));
-		$msg->signal_connect(response=>sub{$msg->destroy});
-		$msg->show_all;
+		ErrorMessage("<b>No selection!</b>\nClick on a list entry to make a selection.");
 		return;
 	}
-	my ($ctype,$port,$ipaddr,$willing) =
-		$model->get($iter,
-			&COLUMN_CTYPE,
-			&COLUMN_PORT,
-			&COLUMN_IPADDR,
-			&COLUMN_WILLING);
+	my ($ctype,$ipaddr,$willing) = $model->get($iter,&COLUMN_CTYPE,&COLUMN_IPADDR,&COLUMN_WILLING);
 	unless ($willing == &WILLING) {
-		my $msg = Gtk2::MessageDialog->new($top,
-			'destroy-with-parent', 'error', 'ok',
-			join("\n", '<b>Host is not willing!</b>',
-				   'Please select another host.'));
-		$msg->signal_connect(response=>sub{$msg->destroy});
-		$msg->show_all;
+		ErrorMessage("<b>Host is not willing!</b>\n$willing != ".&WILLING."\n<b>Address:</b> $ipaddr\n<b>Conntype:</b> $ctype\nPlease select another host.");
+		return;
 	}
-	my $sockaddr;
-	if ($ctype == &FamilyInternet) {
-		$sockaddr = pack_sockaddr_in($port,inet_pton(AF_INET,$ipaddr));
+	unless ($ctype == $options{connectionType}) {
+		ErrorMessage("<b>Host has wrong connection type!</b>\nPlease select another host.");
+		return;
 	}
-	elsif ($ctype == &FamilyInternet6) {
-		$sockaddr = pack_sockaddr_in6($port,inet_pton(AF_INET6,$ipaddr));
-	}
-	elsif ($ctype == &FamilyLocal) {
-		$sockaddr = pack_sockaddr_un($port,$ipaddr);
-	}
-	return unless defined $sockaddr;
-	if (Choose($ctype,$sockaddr)) {
-		exit(&OBEYSESS_DISPLAY);
-	}
+	Choose($ctype,$ipaddr);
 }
 
 sub DoCancel {
