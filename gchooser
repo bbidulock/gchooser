@@ -1,5 +1,6 @@
 #!/usr/bin/perl
 
+use Getopt::Long;
 use Socket qw(
 	SOCK_DGRAM
 	SOCK_STREAM
@@ -31,6 +32,15 @@ use Gtk2 -init;
 use strict;
 use warnings;
 
+my $xdmAddress;
+my $clientAddress;
+my $connectionType;
+
+my $syntax = GetOptions(
+	"xdmAddress"=>\$xdmAddress,
+	"clientAddress"=>\$clientAddress,
+	"connectionType"=>\$connectionType,
+);
 
 # Packet format:
 #
@@ -410,7 +420,7 @@ sub InitXDMCP {
 	 # 'BROADCAST' should register each interface that is broadcast
 	 # capable and is UP by its broadcast address.
 	 #
-	while ($_ = shift @ARGV) {
+	foreach (@ARGV) {
 		if (/^BROADCAST$/) {
 			my @interfaces = Net::Interface->interfaces();
 			foreach my $if (@interfaces) {
@@ -506,45 +516,44 @@ sub InitXDMCP {
 	return 1;
 }
 
-sub GetResources {
-	my $window = Gtk2::Gdk->get_default_root_window;
-
-	my %xrdb;
-	my %resources;
-
-	if (my $atom = Gtk2::Gdk::Atom->new('RESOURCE_MANAGER',TRUE)) {
-		my ($type,$format,$data) = $window->property_get($atom,undef,0,65535,FALSE);
-		if ($type) {
-			my @list = Gtk2::Gdk->text_property_to_utf8_list($type,$format,$data);
-			foreach my $text (@list) {
-				if ($text=~/^([^:]*):\s+(.*)$/) {
-					my ($res,$val) = ($1,$2);
-					$xrdb{$res} = $val;
-					if ($res =~ /xdmAddress/) {
-						$resources{xdmAddress} = [$res,$val];
-					}
-					elsif ($res =~ /clientAddress/) {
-						$resources{clientAddress} = [$res,$val];
-					}
-					elsif ($res =~ /connectionType/) {
-						$resources{connectionType} = [$res,$val];
-					}
-				}
-			}
-		}
-	}
-	return \%resources;
-}
+#sub GetResources {
+#	my $window = Gtk2::Gdk->get_default_root_window;
+#
+#	my %xrdb;
+#	my %resources;
+#
+#	if (my $atom = Gtk2::Gdk::Atom->new('RESOURCE_MANAGER',TRUE)) {
+#		my ($type,$format,$data) = $window->property_get($atom,undef,0,65535,FALSE);
+#		if ($type) {
+#			my @list = Gtk2::Gdk->text_property_to_utf8_list($type,$format,$data);
+#			foreach my $text (@list) {
+#				if ($text=~/^([^:]*):\s+(.*)$/) {
+#					my ($res,$val) = ($1,$2);
+#					$xrdb{$res} = $val;
+#					if ($res =~ /xdmAddress/) {
+#						$resources{xdmAddress} = [$res,$val];
+#					}
+#					elsif ($res =~ /clientAddress/) {
+#						$resources{clientAddress} = [$res,$val];
+#					}
+#					elsif ($res =~ /connectionType/) {
+#						$resources{connectionType} = [$res,$val];
+#					}
+#				}
+#			}
+#		}
+#	}
+#	return \%resources;
+#}
 
 sub Choose {
 	my ($ctype,$rawaddr) = @_;
 	my $host = shift;
-	my $resources = GetResources();
-	if ($resources->{xdmAddress}) {
+	if ($xdmAddress) {
 		#
 		# Connect to XDM and output result
 		#
-		my $data = pack('H*',$resources->{xdmAddress}[1]);
+		my $data = pack('H*',$xdmAddress);
 		my $family = unpack('n',substr($data,0,2));
 		my $port = unpack('n',substr($data,2,2));
 		my $addr = substr($data,4);
@@ -564,8 +573,8 @@ sub Choose {
 			warn "connect: $!";
 			exit(&REMANAGE_DISPLAY);
 		}
-		my $clientAddress = pack('H*',$resources->{clientAddress}[1]);
-		my $connectionType = $resources->{connectionType}[1];
+		my $clientAddress = pack('H*',$clientAddress);
+		my $connectionType = $connectionType;
 		my $message = pack('n',length($clientAddress));
 		$message .= $clientAddress;
 		$message .= pack('n',$connectionType);
