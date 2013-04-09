@@ -2,6 +2,7 @@
 
 use Socket qw(
 	SOCK_DGRAM
+	SOCK_STREAM
 	SOL_SOCKET
 	SO_BROADCAST
 	AF_INET
@@ -21,6 +22,7 @@ use Socket qw(
 	getnameinfo
 	getaddrinfo
 	inet_ntop
+	inet_pton
 	);
 use Net::Interface qw(type :iftype);
 use Net::IP;
@@ -180,87 +182,140 @@ use constant {
 	FamilyLocalHost		=> 252,	    # Xauth.h: for local non-net authentication
 };
 
+use constant {
+	COLUMN_HOSTNAME	    => 0,
+	COLUMN_REMOTENAME   => 1,
+	COLUMN_WILLING	    => 2,
+	COLUMN_STATUS	    => 3,
+	COLUMN_IPADDR	    => 4,
+	COLUMN_CTYPE	    => 5,
+	COLUMN_SERVICE	    => 6,
+	COLUMN_PORT	    => 7,
+	COLUMN_MARKUP	    => 8,
+	COLUMN_TOOLTIP	    => 9,
+	MODEL_FIELDS	    => [
+		'Glib::String', # hostname
+		'Glib::String', # remotename
+		'Glib::Boolean', # willing
+		'Glib::String', # status
+		'Glib::String', # IP Address
+		'Glib::Int',  # connection type
+		'Glib::String', # service
+		'Glib::Int', # port
+		'Glib::String', # markup
+		'Glib::String', # tooltip
+	],
+};
 
-#
-# Get access to the root window.
-#
-
-my @hostnames;
-
-sub Choose {
-}
+my $top;
+my $model;
+my $view;
 
 sub AddHost {
 	my ($addr,$opc,$authname,$hostname,$status) = @_;
+	return unless $model;
 	my ($ctype);
 	my $hostent;
+	my ($port,$rawaddr,$ipaddr);
 	my $family = sockaddr_family($addr);
 	if ($family == AF_INET) {
 		$ctype = &FamilyInternet;
+		($port,$rawaddr) = unpack_sockaddr_in($addr);
+		$ipaddr = inet_ntop(AF_INET,$rawaddr);
 	}
 	elsif ($family == AF_INET6) {
 		$ctype = &FamilyInternet6;
+		($port,$rawaddr) = unpack_sockaddr_in6($addr);
+		$ipaddr = inet_ntop(AF_INET6,$rawaddr);
 	}
 	elsif ($family == AF_UNIX) {
 		$ctype = &FamilyLocal;
+		($port,$ipaddr,$rawaddr) = (0,'','');
 	}
 	else {
 		return;
 	}
+	my $iter;
 	my $found = 0;
-	foreach my $host (@hostnames) {
-		if ($host->{addr} eq $addr) {
-			if ($host->{willing} == $opc and
-			    $host->{status} eq $status and
-			    $host->{addr} eq $addr) {
-				print STDERR "Host $hostname skipped.\n";
-				return;
-			}
-			$found = 1;
-			$hostent = $host;
-			print STDERR "Found host $hostname.\n";
-			last;
+	my @values;
+	for ($iter = $model->iter_nth_child(undef,0); $iter; $iter = $model->iter_next($iter)) {
+		@values = $model->get($iter);
+		next unless $values[&COLUMN_IPADDR] eq $ipaddr and
+			    $values[&COLUMN_HOSTNAME] eq $hostname;
+		if ($values[&COLUMN_WILLING] == $opc and
+		    $values[&COLUMN_STATUS] eq $status and
+		    $values[&COLUMN_CTYPE] == $ctype) {
+			print STDERR "Host $hostname skipped.\n";
+			return;
 		}
+		$found = 1;
+		print STDERR "Found host $hostname.\n";
+		$values[&COLUMN_WILLING]    = $opc;
+		$values[&COLUMN_STATUS]	    = $status;
+		$values[&COLUMN_CTYPE]	    = $ctype;
+		$model->set($iter,
+			&COLUMN_WILLING,    $values[&COLUMN_WILLING],
+			&COLUMN_STATUS,	    $values[&COLUMN_STATUS],
+			&COLUMN_CTYPE,	    $values[&COLUMN_CTYPE],
+		);
+		last;
 	}
 	if (not $found) {
-		my ($err, $name, $service) = getnameinfo($addr);
-		next if $err;
-		my ($port,$ipaddr);
-		if ($family == AF_INET) {
-			($port,$ipaddr) = unpack_sockaddr_in($addr);
-			$ipaddr = inet_ntop(AF_INET,$ipaddr);
-		}
-		elsif ($family == AF_INET6) {
-			($port,$ipaddr) = unpack_sockaddr_in6($addr);
-			$ipaddr = inet_ntop(AF_INET6,$ipaddr);
-		}
-		elsif ($family == AF_UNIX) {
-			($port,$ipaddr) = (0,'');
-		}
-		$hostent = {
-			service=>$service,
-			ctype=>$ctype,
-			hostname=>$hostname,
-			fromhere=>$name,
-			addr=>$addr,
-			port=>$port,
-			ipaddr=>$ipaddr,
-		};
-		push @hostnames, $hostent;
+		my ($err, $remotename, $service) = getnameinfo($addr);
+		return if $err;
+		@values = ();
+		$values[&COLUMN_HOSTNAME]   = $hostname;
+		$values[&COLUMN_REMOTENAME] = $remotename;
+		$values[&COLUMN_WILLING]    = $opc;
+		$values[&COLUMN_STATUS]	    = $status;
+		$values[&COLUMN_IPADDR]	    = $ipaddr;
+		$values[&COLUMN_CTYPE]	    = $ctype;
+		$values[&COLUMN_SERVICE]    = $service;
+		$values[&COLUMN_PORT]	    = $port;
+		$iter = $model->append;
+		$model->set($iter,
+			&COLUMN_HOSTNAME,   $values[&COLUMN_HOSTNAME],
+			&COLUMN_REMOTENAME, $values[&COLUMN_REMOTENAME],
+			&COLUMN_WILLING,    $values[&COLUMN_WILLING],
+			&COLUMN_STATUS,	    $values[&COLUMN_STATUS],
+			&COLUMN_IPADDR,	    $values[&COLUMN_IPADDR],
+			&COLUMN_CTYPE,	    $values[&COLUMN_CTYPE],
+			&COLUMN_SERVICE,    $values[&COLUMN_SERVICE],
+			&COLUMN_PORT,	    $values[&COLUMN_PORT],
+		);
 	}
-	$hostent->{willing} = $opc;
-	$hostent->{status} = $status;
-	print STDERR "Added host:\n";
-	print STDERR "connectionType: ",$hostent->{ctype},"\n";
-	print STDERR "hostname: ",$hostent->{hostname},"\n";
-	print STDERR "fromhere: ",$hostent->{fromhere},"\n";
-	print STDERR "service: ",$hostent->{service},"\n";
-	print STDERR "willing: ",$hostent->{willing},"\n";
-	print STDERR "status: ",$hostent->{status},"\n";
-	print STDERR "port: ",$hostent->{port},"\n";
-	print STDERR "ipaddr: ",$hostent->{ipaddr},"\n";
-	print STDERR "----------------------------\n";
-	 #RebuildTable();
+	my @markup;
+	my @tooltip;
+	my $remotename = $values[&COLUMN_REMOTENAME];
+	my $service    = $values[&COLUMN_SERVICE];
+	my $conntype = {
+		&FamilyLocal=>"UNIX Domain",
+		&FamilyInternet=>"TCP (IP Version 4)",
+		&FamilyInternet6=>"TCP (IP Version 6)",
+	}->{$ctype};
+	push @tooltip, "<small><b>Hostname:</b>\t$hostname</small>";
+	push @tooltip, "<small><b>Alias:</b>\t\t$remotename</small>";
+	if ($opc == &WILLING) {
+		push @markup, "<span foreground=\"black\"><b>$hostname</b></span>";
+		push @markup, "<small><span foreground=\"black\">($remotename)</span></small>";
+		push @markup, "<small><span foreground=\"black\"><i>$status</i></span></small>";
+		push @tooltip, "<small><b>Willing:</b>\t\tWilling</small>";
+		push @tooltip, "<small><b>Status:</b>\t\t$status</small>";
+	}
+	else {
+		push @markup, "<span foreground=\"grey\"><b>$hostname</b></span>";
+		push @markup, "<small><span foreground=\"grey\">($remotename)</span></small>";
+		push @markup, "<small><span foreground=\"grey\"><i>Unwilling</i></span></small>";
+		push @tooltip, "<small><b>Willing:</b>\tUnwilling</small>";
+	}
+	push @tooltip, "<small><b>IP Address:</b>\t$ipaddr</small>";
+	push @tooltip, "<small><b>ConnType:</b>\t$conntype</small>";
+	push @tooltip, "<small><b>Service:</b>\t\t$service</small>";
+	push @tooltip, "<small><b>Port:</b>\t\t$port</small>";
+	$model->set($iter,
+		&COLUMN_MARKUP,	 join("\n",@markup),
+		&COLUMN_TOOLTIP, join("\n",@tooltip),
+	);
 	return 1;
 }
 
@@ -450,6 +505,204 @@ sub InitXDMCP {
 	PingHosts();
 	return 1;
 }
+
+sub GetResources {
+	my $window = Gtk2::Gdk->get_default_root_window;
+
+	my %xrdb;
+	my %resources;
+
+	if (my $atom = Gtk2::Gdk::Atom->new('RESOURCE_MANAGER',TRUE)) {
+		my ($type,$format,$data) = $window->property_get($atom,undef,0,65535,FALSE);
+		if ($type) {
+			my @list = Gtk2::Gdk->text_property_to_utf8_list($type,$format,$data);
+			foreach my $text (@list) {
+				if ($text=~/^([^:]*):\s+(.*)$/) {
+					my ($res,$val) = ($1,$2);
+					$xrdb{$res} = $val;
+					if ($res =~ /xdmAddress/) {
+						$resources{xdmAddress} = [$res,$val];
+					}
+					elsif ($res =~ /clientAddress/) {
+						$resources{clientAddress} = [$res,$val];
+					}
+					elsif ($res =~ /connectionType/) {
+						$resources{connectionType} = [$res,$val];
+					}
+				}
+			}
+		}
+	}
+	return \%resources;
+}
+
+sub Choose {
+	my ($ctype,$rawaddr) = @_;
+	my $host = shift;
+	my $resources = GetResources();
+	if ($resources->{xdmAddress}) {
+		#
+		# Connect to XDM and output result
+		#
+		my $data = pack('H*',$resources->{xdmAddress}[1]);
+		my $family = unpack('n',substr($data,0,2));
+		my $port = unpack('n',substr($data,2,2));
+		my $addr = substr($data,4);
+		my $sockaddr;
+		if ($family == AF_INET) {
+			$sockaddr = pack_sockaddr_in($port,$addr);
+		}
+		elsif ($family == AF_INET6) {
+			$sockaddr = pack_sockaddr_in6($port,$addr);
+		}
+		my $sock;
+		unless (socket($sock, $family, SOCK_STREAM, 0)) {
+			warn "socket: $!";
+			exit(&REMANAGE_DISPLAY);
+		}
+		unless (connect($sock,$sockaddr)) {
+			warn "connect: $!";
+			exit(&REMANAGE_DISPLAY);
+		}
+		my $clientAddress = pack('H*',$resources->{clientAddress}[1]);
+		my $connectionType = $resources->{connectionType}[1];
+		my $message = pack('n',length($clientAddress));
+		$message .= $clientAddress;
+		$message .= pack('n',$connectionType);
+		$message .= pack('n',length($rawaddr));
+		$message .= $rawaddr;
+		close($sock);
+	}
+	else {
+		#
+		# Print result on standard output:
+		#
+		# format integer connection type '%u\n'
+		# numbers and spaces.
+		#
+		printf STDOUT "%u\n%s\n", $ctype,
+			join(' ',unpack('C*',$rawaddr));
+	}
+}
+
+sub DoAccept {
+	return unless $view;
+	my $selection = $view->get_selection;
+	my ($model,$iter) = $selection->get_selected;
+	unless ($iter) {
+		my $msg = Gtk2::MessageDialog->new_with_markup($top,
+			'destroy-with-parent', 'error', 'ok',
+			join("\n", '<b>No selection!</b>',
+				   'Click on a list entry to make a selection.'));
+		$msg->signal_connect(response=>sub{$msg->destroy});
+		$msg->show_all;
+		return;
+	}
+	my ($ctype,$port,$ipaddr,$willing) =
+		$model->get($iter,
+			&COLUMN_CTYPE,
+			&COLUMN_PORT,
+			&COLUMN_IPADDR,
+			&COLUMN_WILLING);
+	unless ($willing == &WILLING) {
+		my $msg = Gtk2::MessageDialog->new($top,
+			'destroy-with-parent', 'error', 'ok',
+			join("\n", '<b>Host is not willing!</b>',
+				   'Please select another host.'));
+		$msg->signal_connect(response=>sub{$msg->destroy});
+		$msg->show_all;
+	}
+	my $sockaddr;
+	if ($ctype == &FamilyInternet) {
+		$sockaddr = pack_sockaddr_in($port,inet_pton(AF_INET,$ipaddr));
+	}
+	elsif ($ctype == &FamilyInternet6) {
+		$sockaddr = pack_sockaddr_in6($port,inet_pton(AF_INET6,$ipaddr));
+	}
+	elsif ($ctype == &FamilyLocal) {
+		$sockaddr = pack_sockaddr_un($port,$ipaddr);
+	}
+	return unless defined $sockaddr;
+	if (Choose($ctype,$sockaddr)) {
+		exit(&OBEYSESS_DISPLAY);
+	}
+}
+
+sub DoCancel {
+	exit(&OBEYSESS_DISPLAY);
+}
+
+sub DoCheckWilling {
+	my $host = shift;
+	return ($host->{willing} == &WILLING);
+}
+
+sub DoPing {
+	if ($pingTry == PING_TRIES) {
+		$pingTry = 0;
+		PingHosts;
+	}
+}
+
+sub GetWindow {
+	my $win = Gtk2::Window->new('toplevel');
+	$win->set_wmclass('chooser','Chooser');
+	$win->set_title('XDMCP Chooser');
+	$win->set_gravity('center');
+	$win->set_position('center');
+	$win->signal_connect(destroy=>sub{DoCancel(); 1});
+	$win->set_border_width(8);
+
+	my $vbox = Gtk2::VBox->new;
+	$win->add($vbox);
+
+	{
+		my $sw = Gtk2::ScrolledWindow->new;
+		$sw->set_shadow_type('etched-in');
+		$sw->set_policy('never','automatic');
+		$vbox->pack_start($sw,TRUE,TRUE,0);
+
+		$model = Gtk2::ListStore->new(@{&MODEL_FIELDS});
+		$view = Gtk2::TreeView->new($model);
+		$view->set_rules_hint(TRUE);
+		$view->set_search_column(&COLUMN_HOSTNAME);
+		$view->set_tooltip_column(&COLUMN_TOOLTIP);
+		$sw->add($view);
+
+		my $renderer = Gtk2::CellRendererText->new;
+		my $column = Gtk2::TreeViewColumn->new_with_attributes(
+			'Hosts',$renderer,markup=>&COLUMN_MARKUP);
+		$column->set_sort_column_id(&COLUMN_MARKUP);
+		$view->append_column($column);
+		$view->signal_connect(row_activated=>sub{DoAccept(); Gtk2::EVENT_PROPAGATE});
+
+		$sw->set_size_request(-1,300);
+	}
+	{
+		my $bbox = Gtk2::HButtonBox->new;
+		$bbox->set_layout_default('start');
+		$bbox->set_spacing_default(5);
+		$vbox->pack_end($bbox,FALSE,TRUE,0);
+
+		for (
+			[qw(gtk-refresh Refresh),sub{DoPing(); Gtk2::EVENT_PROPAGATE}],
+			[qw(gtk-cancel Cancel),sub{DoCancel(); Gtk2::EVENT_PROPAGATE}],
+			[qw(gtk-connect Connect),sub{DoAccept(); Gtk2::EVENT_PROPAGATE}],
+		) {
+			my $image = Gtk2::Image->new_from_icon_name($_->[0],'button');
+			my $button = Gtk2::Button->new_with_label($_->[1]);
+			$button->set_image($image);
+			$button->signal_connect_swapped(clicked=>$_->[2],$win);
+			$win->{buttons}{$_->[1]} = $button;
+			$bbox->add($button);
+		}
+	}
+	$win->set_default_size(-1,350);
+	$win->show_all;
+	return $win
+}
+
+$top = GetWindow;
 
 InitXDMCP;
 
