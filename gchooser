@@ -42,9 +42,9 @@ sub pack_option {
 }
 
 my $syntax = GetOptions(
-	"xdmAddress:s"=>\&pack_option,
-	"clientAddress:s"=>\&pack_option,
-	"connectionType:i"=>\$options{connectionType},
+	"xdmAddress=s"=>\&pack_option,
+	"clientAddress=s"=>\&pack_option,
+	"connectionType=i"=>\$options{connectionType},
 );
 
 # Packet format:
@@ -596,7 +596,7 @@ sub Choose {
 		my $message = '';
 		$message .= pack('n',length($options{clientAddress})).$options{clientAddress};
 		$message .= pack('n',$options{connectionType});
-		$message .= pack('n',length($rawaddr).$rawaddr);
+		$message .= pack('n',length($rawaddr)).$rawaddr;
 		unless (send($sock,$message,0,$sockaddr)) {
 			ErrorMessage("<b>send:</b> $!");
 			close($sock);
