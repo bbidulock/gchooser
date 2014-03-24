@@ -2,3 +2,4 @@ gchooser
 Makefile.PL
 MANIFEST
 banner.png
+gchooser.pod

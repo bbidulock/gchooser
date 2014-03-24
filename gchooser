@@ -1,30 +1,10 @@
 #!/usr/bin/perl
 
 use Getopt::Long;
-use Socket qw(
-	SOCK_DGRAM
-	SOCK_STREAM
-	SOL_SOCKET
-	SO_BROADCAST
-	AF_INET
-	AF_INET6
-	AF_UNIX
-	IPPROTO_UDP
-	MSG_DONTWAIT
-	PF_INET
-	PF_INET6
-	sockaddr_family
-	pack_sockaddr_in
-	unpack_sockaddr_in
-	pack_sockaddr_in6
-	unpack_sockaddr_in6
-	pack_sockaddr_un
-	unpack_sockaddr_un
-	getnameinfo
-	getaddrinfo
-	inet_ntop
-	inet_pton
-	);
+use Socket qw( SOCK_DGRAM SOCK_STREAM SOL_SOCKET SO_BROADCAST AF_INET AF_INET6 AF_UNIX
+	IPPROTO_UDP MSG_DONTWAIT PF_INET PF_INET6 sockaddr_family pack_sockaddr_in
+	unpack_sockaddr_in pack_sockaddr_in6 unpack_sockaddr_in6 pack_sockaddr_un
+	unpack_sockaddr_un getnameinfo getaddrinfo inet_ntop inet_pton);
 use Net::Interface qw(type :iftype);
 use Net::IP;
 use Glib qw(TRUE FALSE);
@@ -32,10 +12,17 @@ use Gtk2 -init;
 use strict;
 use warnings;
 
-my $splash = "/usr/lib/X11/xdm/banner.png";
-$splash = "/home/brian/.fluxbox/logout-banner.png"
-	unless -f "$splash";
-my %options = (connectionType=>0);
+my $HOSTNAME = $ENV{HOSTNAME};
+unless ($HOSTNAME) {
+	$HOSTNAME = `hostname`;
+	chomp $HOSTNAME;
+}
+
+my %options = (
+	connectionType=>0,
+	banner=>"/usr/lib/X11/xdm/banner.png",
+	welcome=>"<span font=\"Liberation Sans 14\"><b><i>Welcome to $HOSTNAME!</i></b></span>",
+	);
 
 sub pack_option {
 	$options{$_[0]} = pack('H*',$_[1]);
@@ -45,6 +32,8 @@ my $syntax = GetOptions(
 	"xdmAddress=s"=>\&pack_option,
 	"clientAddress=s"=>\&pack_option,
 	"connectionType=i"=>\$options{connectionType},
+	"banner=s"=>\$options{banner},
+	"welcome=s"=>\$options{welcome},
 );
 
 # Packet format:
@@ -58,13 +47,6 @@ my $syntax = GetOptions(
 # Fields:
 #	Authentication names: ARRAYofARRAY8
 
-# ForwardQuery
-# Primary Manager -> Secondary Manager
-# Fields:
-#	Client Address: ARRAY8
-#	Client Port: ARRAY8
-#	Authentication names: ARRAYofARRAY8
-
 # Willing
 # Manager -> Display
 #	Authentication name: ARRAY8
@@ -76,58 +58,6 @@ my $syntax = GetOptions(
 # Manager -> Display
 #	Hostname: ARRAY8
 #	Status: ARRAY8
-#
-
-# Request
-# Display -> Manager
-#	Display Number: CARD16
-#	Connection Types: ARRAY16
-#	Connection Address: ARRAYofARRAY8
-#	Authentication Name: ARRAY8
-#	Authentication Data: ARRAY8
-#	Authorization Names: ARRAYofARRAY8
-#	Manufacturer Display ID: ARRAY8
-#
-
-# Accept
-# Manager -> Display
-#	Session ID: CARD32
-#	Authentication Name: ARRAY8
-#	Authentication Data: ARRAY8
-#	Authorization Name: ARRAY8
-#	Authorization Data: ARRAY8
-#
-
-# Decline
-# Manager -> Display
-#	Status: ARRAY8
-#	Authentication Name: ARRAY8
-#	Authentication Data: ARRAY8
-#
-
-# Manage
-# Display -> Manager
-#	Session ID: CARD32
-#	Display Number: CARD16
-#	Display Class: ARRAY8
-#
-
-# Failed
-# Manager -> Display
-#	Session ID: CARD32
-#	Status: ARRAY8
-#
-
-# KeepAlive
-# Display -> Manager
-#	Display Number: CARD16
-#	Session ID: CARD32
-#
-
-# Alive
-# Manager -> Display
-#	Session Running: CARD8
-#	Session ID: CARD32
 #
 
 use constant {
@@ -400,6 +330,16 @@ sub InitXDMCP {
 			return Glib::SOURCE_CONTINUE;
 		}) if defined $sock6;
 
+	my $clienttype = '';
+	if (length($options{clientAddress}) == 4) {
+		my $ip = new Net::IP(inet_ntop(AF_INET,$options{clientAddress}));
+		$clienttype = $ip->iptype;
+	}
+	elsif (length($options{clientAddress}) == 16) {
+		my $ip = new Net::IP(inet_ntop(AF_INET6,$options{clientAddress}));
+		$clienttype = $ip->iptype;
+	}
+
 	 # ARGV can be:
 	 #	special string 'BROADCAST'
 	 #	hex coded IPv4 address XXXXXXXX
@@ -459,18 +399,18 @@ sub InitXDMCP {
 				if ($result->{family} == AF_INET) {
 					my ($port,$addr) =
 						unpack_sockaddr_in($result->{addr});
-					warn "Whoops" unless defined $addr;
 					my $ip = new Net::IP(inet_ntop(AF_INET,$addr));
 					my $type = $ip->iptype;
 					warn "Address ",inet_ntop(AF_INET,$addr)," invalid!" unless defined $type;
-					if ($type eq 'MULTICAST') {
+					if ($type =~ /MULTICAST/i) {
 						push @hostaddrs, {
 							addr=>$result->{addr},
 							sock=>$sock4,
 							opco=>&BROADCAST_QUERY,
 						};
 					}
-					else {
+					elsif ($type !~ /LOOPBACK/i or
+					       $clienttype =~ /LOOPBACK/i) {
 						push @hostaddrs, {
 							addr=>$result->{addr},
 							sock=>$sock4,
@@ -481,16 +421,17 @@ sub InitXDMCP {
 				else {
 					my ($port,$addr,$scope,$flow) =
 						unpack_sockaddr_in6($result->{addr});
-					my $type = type($addr);
-					if (($type & IPV6_ADDR_MULTICAST) or
-					    ($type & IPV6_ADDR_ANYCAST)) {
+					my $ip = new Net::IP(inet_ntop(AF_INET6,$addr));
+					my $type = $ip->iptype;
+					if ($type =~ /MULTICAST/i) {
 						push @hostaddrs, {
 							addr=>$result->{addr},
 							sock=>$sock6,
 							opco=>&BROADCAST_QUERY,
 						};
 					}
-					else {
+					elsif ($type !~ /LOOPBACK/i or
+					       $clienttype =~ /LOOPBACK/i) {
 						push @hostaddrs, {
 							addr=>$result->{addr},
 							sock=>$sock6,
@@ -505,36 +446,6 @@ sub InitXDMCP {
 	PingHosts();
 	return 1;
 }
-
-#sub GetResources {
-#	my $window = Gtk2::Gdk->get_default_root_window;
-#
-#	my %xrdb;
-#	my %resources;
-#
-#	if (my $atom = Gtk2::Gdk::Atom->new('RESOURCE_MANAGER',TRUE)) {
-#		my ($type,$format,$data) = $window->property_get($atom,undef,0,65535,FALSE);
-#		if ($type) {
-#			my @list = Gtk2::Gdk->text_property_to_utf8_list($type,$format,$data);
-#			foreach my $text (@list) {
-#				if ($text=~/^([^:]*):\s+(.*)$/) {
-#					my ($res,$val) = ($1,$2);
-#					$xrdb{$res} = $val;
-#					if ($res =~ /xdmAddress/) {
-#						$resources{xdmAddress} = [$res,$val];
-#					}
-#					elsif ($res =~ /clientAddress/) {
-#						$resources{clientAddress} = [$res,$val];
-#					}
-#					elsif ($res =~ /connectionType/) {
-#						$resources{connectionType} = [$res,$val];
-#					}
-#				}
-#			}
-#		}
-#	}
-#	return \%resources;
-#}
 
 sub ErrorMessage {
 	my $markup = shift;
@@ -655,33 +566,14 @@ sub GetWindow {
 	$win->signal_connect(destroy=>sub{DoCancel(); 1});
 	$win->set_border_width(8);
 
+	my $hostname = `hostname`; chomp $hostname;
+
 	my $vbox = Gtk2::VBox->new;
 	$win->add($vbox);
 	{
-		my $hostname = `hostname`; chomp $hostname;
 		my $lab = Gtk2::Label->new;
 		my @lines;
-		push @lines, "<big><b>Welcome to $hostname!</b></big>";
-		if ($options{xdmAddress}) {
-			my $a = $options{xdmAddress};
-			my ($family,$port,$addr) = unpack('nn',substr($a,0,4));
-			if ($family == AF_INET) {
-				$addr = inet_ntop($family,substr($a,4,4)).":$port";
-			} elsif ($family == AF_INET6) {
-				$addr = inet_ntop($family,substr($a,4,16)).":$port";
-			}
-			push @lines, "<small>\n<b>xdmAddress:</b> $addr</small>";
-		}
-		if ($options{clientAddress}) {
-			my $a = $options{clientAddress};
-			my $addr;
-			if (length($a) == 4) {
-				$addr = inet_ntop(AF_INET,$a);
-			} elsif (length($a) == 16) {
-				$addr = inet_ntop(AF_INET6,$a);
-			}
-			push @lines, "<small><b>clientAddress:</b> $addr</small>";
-		}
+		push @lines, $options{welcome} if $options{welcome};
 		$lab->set_markup(join("\n",@lines));
 		$vbox->pack_start($lab,FALSE,TRUE,0);
 	}
@@ -697,10 +589,10 @@ sub GetWindow {
 
 			my $pan = Gtk2::Frame->new;
 			$pan->set_shadow_type('none');
-			$pan->set_border_width(10);
+			$pan->set_border_width(12);
 			$bin->add($pan);
 
-			my $img = Gtk2::Image->new_from_file($splash);
+			my $img = Gtk2::Image->new_from_file($options{banner});
 			$pan->add($img);
 		}
 		{
@@ -722,7 +614,7 @@ sub GetWindow {
 
 				my $renderer = Gtk2::CellRendererText->new;
 				my $column = Gtk2::TreeViewColumn->new_with_attributes(
-					"Accessible XDMCP Hosts",$renderer,markup=>&COLUMN_MARKUP);
+					"XDMCP Host Menu from $HOSTNAME",$renderer,markup=>&COLUMN_MARKUP);
 				$column->set_sort_column_id(&COLUMN_MARKUP);
 				$view->append_column($column);
 				$view->signal_connect(row_activated=>sub{DoAccept(); Gtk2::EVENT_PROPAGATE});
@@ -731,7 +623,7 @@ sub GetWindow {
 			}
 			{
 				my $bbox = Gtk2::HButtonBox->new;
-				$bbox->set_layout_default('start');
+				$bbox->set_layout_default('spread');
 				$bbox->set_spacing_default(5);
 				$vbox->pack_end($bbox,FALSE,TRUE,0);
 
@@ -760,3 +652,9 @@ $top = GetWindow;
 InitXDMCP;
 
 Gtk2->main;
+
+exit(&REMANAGE_DISPLAY);
+
+1;
+
+__DATA__
