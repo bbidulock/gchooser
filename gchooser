@@ -331,13 +331,15 @@ sub InitXDMCP {
 		}) if defined $sock6;
 
 	my $clienttype = '';
-	if (length($options{clientAddress}) == 4) {
-		my $ip = new Net::IP(inet_ntop(AF_INET,$options{clientAddress}));
-		$clienttype = $ip->iptype;
-	}
-	elsif (length($options{clientAddress}) == 16) {
-		my $ip = new Net::IP(inet_ntop(AF_INET6,$options{clientAddress}));
-		$clienttype = $ip->iptype;
+	if ($options{clientAddress}) {
+		if (length($options{clientAddress}) == 4) {
+			my $ip = new Net::IP(inet_ntop(AF_INET,$options{clientAddress}));
+			$clienttype = $ip->iptype;
+		}
+		elsif (length($options{clientAddress}) == 16) {
+			my $ip = new Net::IP(inet_ntop(AF_INET6,$options{clientAddress}));
+			$clienttype = $ip->iptype;
+		}
 	}
 
 	 # ARGV can be:
@@ -483,15 +485,23 @@ sub Choose {
 		if ($family == AF_INET) {
 			$addr = substr($options{xdmAddress},4,4);
 			$sockaddr = pack_sockaddr_in($port,$addr);
-			$rawaddr = inet_pton($family,$ipaddr);
 		}
 		elsif ($family == AF_INET6) {
 			$addr = substr($options{xdmAddress},4,16);
 			$sockaddr = pack_sockaddr_in6($port,$addr);
-			$rawaddr = inet_pton($family,$ipaddr);
 		}
 		else {
 			ErrorMessage("<b>Bad address family!</b>\nNumber: $family\n");
+			return;
+		}
+		if ($ctype == &FamilyInternet) {
+			$rawaddr = inet_pton(AF_INET,$ipaddr);
+		}
+		elsif ($ctype == &FamilyInternet6) {
+			$rawaddr = inet_pton(AF_INET6,$ipaddr);
+		}
+		else {
+			ErrorMessage("<b>Bad connect type!<b>\nNumber $ctype\n");
 			return;
 		}
 		my $sock;
@@ -563,6 +573,13 @@ sub GetWindow {
 	$win->set_title('XDMCP Chooser');
 	$win->set_gravity('center');
 	$win->set_position('center');
+	$win->set_default_size(800,600);
+	$win->set_property("allow-grow",FALSE);
+	$win->set_property("allow-shrink",FALSE);
+	$win->set_resizable(FALSE);
+	$win->set_decorated(FALSE);
+	$win->set_skip_pager_hint(TRUE);
+	$win->set_skip_taskbar_hint(TRUE);
 	$win->signal_connect(destroy=>sub{DoCancel(); 1});
 	$win->set_border_width(8);
 

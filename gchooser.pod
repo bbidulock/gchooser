@@ -42,7 +42,7 @@ are still required but no options.
 
 Specifies the banner graphic to display in the left pane of the host menu.
 L<xdm(1)> does not provide this option, but it can easily be invoked by a
-a shell script invoked by L<xdm(1)> that adds the options.  For example:
+shell script invoked by L<xdm(1)> that adds the options.  For example:
 
  #!/bin/sh
  /usr/lib/X11/xdm/gchooser -banner /usr/lib/X11/xdm/banner.png $@
@@ -104,7 +104,7 @@ L<xdm(1)> (see F</usr/include/X11/Xdmcp.h> are:
 
 B<gchooser> has no configuration of its own.  If you want to change its look
 or behaviour, you are welcome to hack the script.  It is only about 600 lines
-of perl.  There is F<banner.png> file used that is installed by default in
+of perl.  There is a F<banner.png> file used that is installed by default in
 F</usr/lib/X11/xdm/banner.png>.
 
 =over 4
