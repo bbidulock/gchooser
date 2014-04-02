@@ -2,7 +2,7 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
 	NAME => "gchooser",
 	#DESC => "An XDM chooser written in gtk2-perl.",
-	VERSION => "0.07",
+	VERSION_FROM => "gchooser",
 	EXE_FILES => [ "gchooser" ],
 	MAN1PODS => {
 		'gchooser.pod' => 'blib/man1/gchooser.1',
